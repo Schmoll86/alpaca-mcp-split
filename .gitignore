@@ -1,0 +1,33 @@
+# Environment and secrets
+.env
+*.env
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Database files
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# IDE
+.vscode/
+.idea/
+.cursor/
+.claude/
+*.swp
+*.swo
+.DS_Store
+
+# Logs
+*.log
