@@ -67,7 +67,9 @@ from alpaca.trading.requests import (
     OptionLegRequest,
     ReplaceOrderRequest,
     StopLimitOrderRequest,
+    StopLossRequest,
     StopOrderRequest,
+    TakeProfitRequest,
     TrailingStopOrderRequest,
     UpdateWatchlistRequest,
 )
@@ -475,17 +477,26 @@ async def place_stock_order(
     trail_price: float = None,
     trail_percent: float = None,
     extended_hours: bool = False,
-    client_order_id: str = None
+    client_order_id: str = None,
+    stop_loss_price: float = None,
+    take_profit_price: float = None
 ) -> str:
     """
     Places an order of any supported type (MARKET, LIMIT, STOP, STOP_LIMIT, TRAILING_STOP) using the correct Alpaca request class.
+
+    Optionally attaches a protective stop and/or profit target atomically (the stop/target live at the
+    broker the instant the entry fills — no supervision needed). On a MARKET or LIMIT entry:
+      - stop_loss_price only            -> OrderClass.OTO  (entry triggers a protective stop)
+      - take_profit_price only          -> OrderClass.OTO  (entry triggers a take-profit limit)
+      - both stop_loss_price + take_profit_price -> OrderClass.BRACKET (entry + OCO stop & target)
+    Note: advanced (OTO/BRACKET) orders require whole-share quantities and TIF of DAY or GTC.
 
     Args:
         symbol (str): Stock ticker symbol (e.g., AAPL, MSFT)
         side (str): Order side (buy or sell)
         quantity (float): Number of shares to buy or sell
         order_type (str): Order type (MARKET, LIMIT, STOP, STOP_LIMIT, TRAILING_STOP). Default is MARKET.
-        time_in_force (str): Time in force for the order. Valid options for equity trading: 
+        time_in_force (str): Time in force for the order. Valid options for equity trading:
             DAY, GTC, OPG, CLS, IOC, FOK (default: DAY)
         limit_price (float): Limit price (required for LIMIT, STOP_LIMIT)
         stop_price (float): Stop price (required for STOP, STOP_LIMIT)
@@ -493,6 +504,8 @@ async def place_stock_order(
         trail_percent (float): Trail percent (for TRAILING_STOP)
         extended_hours (bool): Allow execution during extended hours (default: False)
         client_order_id (str): Optional custom identifier for the order
+        stop_loss_price (float): Optional attached protective stop price (MARKET/LIMIT entries only).
+        take_profit_price (float): Optional attached take-profit limit price (MARKET/LIMIT entries only).
 
     Returns:
         str: Formatted string containing order details or error message.
@@ -532,6 +545,24 @@ async def place_stock_order(
 
         # Validate order_type
         order_type_upper = order_type.upper()
+
+        # Optional atomic protective legs (OTO / BRACKET). Only valid on MARKET/LIMIT entries.
+        adv_kwargs = {}
+        if stop_loss_price is not None or take_profit_price is not None:
+            if order_type_upper not in ("MARKET", "LIMIT"):
+                return ("stop_loss_price/take_profit_price are only supported on MARKET or LIMIT "
+                        "entries (they build an OTO/BRACKET). Got order_type=" + order_type + ".")
+            if stop_loss_price is not None and take_profit_price is not None:
+                adv_kwargs["order_class"] = OrderClass.BRACKET
+                adv_kwargs["stop_loss"] = StopLossRequest(stop_price=stop_loss_price)
+                adv_kwargs["take_profit"] = TakeProfitRequest(limit_price=take_profit_price)
+            elif stop_loss_price is not None:
+                adv_kwargs["order_class"] = OrderClass.OTO
+                adv_kwargs["stop_loss"] = StopLossRequest(stop_price=stop_loss_price)
+            else:
+                adv_kwargs["order_class"] = OrderClass.OTO
+                adv_kwargs["take_profit"] = TakeProfitRequest(limit_price=take_profit_price)
+
         if order_type_upper == "MARKET":
             order_data = MarketOrderRequest(
                 symbol=symbol,
@@ -540,7 +571,8 @@ async def place_stock_order(
                 type=OrderType.MARKET,
                 time_in_force=tif_enum,
                 extended_hours=extended_hours,
-                client_order_id=client_order_id or f"order_{int(time.time())}"
+                client_order_id=client_order_id or f"order_{int(time.time())}",
+                **adv_kwargs
             )
         elif order_type_upper == "LIMIT":
             if limit_price is None:
@@ -553,7 +585,8 @@ async def place_stock_order(
                 time_in_force=tif_enum,
                 limit_price=limit_price,
                 extended_hours=extended_hours,
-                client_order_id=client_order_id or f"order_{int(time.time())}"
+                client_order_id=client_order_id or f"order_{int(time.time())}",
+                **adv_kwargs
             )
         elif order_type_upper == "STOP":
             if stop_price is None:
