@@ -65,6 +65,7 @@ from alpaca.trading.requests import (
     LimitOrderRequest,
     MarketOrderRequest,
     OptionLegRequest,
+    ReplaceOrderRequest,
     StopLimitOrderRequest,
     StopOrderRequest,
     TrailingStopOrderRequest,
@@ -704,6 +705,100 @@ async def cancel_order_by_id(order_id: str) -> str:
         
     except Exception as e:
         return f"Error cancelling order {order_id}: {str(e)}"
+
+@mcp.tool()
+async def replace_order_by_id(
+    order_id: str,
+    qty: Optional[float] = None,
+    limit_price: Optional[float] = None,
+    stop_price: Optional[float] = None,
+    trail: Optional[float] = None,
+    time_in_force: Optional[str] = None,
+    client_order_id: Optional[str] = None,
+) -> str:
+    """
+    Modify an existing open order in place (re-ladder a resting limit, tighten a stop,
+    or change quantity) without cancelling and re-submitting.
+
+    Only the fields you supply are changed; everything you leave as None is preserved
+    from the original order. Alpaca implements this as an atomic replace: it cancels the
+    old order and creates a successor, returning the NEW order (with a new id). The
+    successor's `replaces` field points back at the original order_id.
+
+    Args:
+        order_id: The UUID of the open order to modify.
+        qty: New share quantity. Leave None to keep the original quantity.
+        limit_price: New limit price (for LIMIT / STOP_LIMIT orders).
+        stop_price: New stop price (for STOP / STOP_LIMIT orders).
+        trail: New trail amount (for TRAILING_STOP orders).
+        time_in_force: New time in force (DAY, GTC, OPG, CLS, IOC, FOK). None keeps original.
+        client_order_id: Optional custom identifier for the replacement order.
+
+    Returns:
+        str: Formatted details of the replacement order, or an error message.
+    """
+    try:
+        # Translate time_in_force string to the enum, only if the caller is changing it.
+        tif_enum = None
+        if time_in_force is not None:
+            if isinstance(time_in_force, TimeInForce):
+                tif_enum = time_in_force
+            elif isinstance(time_in_force, str):
+                tif_map = {
+                    "DAY": TimeInForce.DAY,
+                    "GTC": TimeInForce.GTC,
+                    "OPG": TimeInForce.OPG,
+                    "CLS": TimeInForce.CLS,
+                    "IOC": TimeInForce.IOC,
+                    "FOK": TimeInForce.FOK,
+                }
+                tif_enum = tif_map.get(time_in_force.upper())
+                if tif_enum is None:
+                    return f"Invalid time_in_force: {time_in_force}. Valid options are: DAY, GTC, OPG, CLS, IOC, FOK"
+            else:
+                return f"Invalid time_in_force type: {type(time_in_force)}. Must be string or TimeInForce enum."
+
+        # Build the request with only the fields the caller actually wants to change, so
+        # unspecified attributes are inherited from the original order rather than nulled.
+        replace_kwargs: Dict[str, Any] = {}
+        if qty is not None:
+            replace_kwargs["qty"] = qty
+        if limit_price is not None:
+            replace_kwargs["limit_price"] = limit_price
+        if stop_price is not None:
+            replace_kwargs["stop_price"] = stop_price
+        if trail is not None:
+            replace_kwargs["trail"] = trail
+        if tif_enum is not None:
+            replace_kwargs["time_in_force"] = tif_enum
+        if client_order_id is not None:
+            replace_kwargs["client_order_id"] = client_order_id
+
+        if not replace_kwargs:
+            return "No changes supplied. Provide at least one of: qty, limit_price, stop_price, trail, time_in_force."
+
+        order = trade_client.replace_order_by_id(order_id, ReplaceOrderRequest(**replace_kwargs))
+        return f"""
+                Order Replaced Successfully:
+                ----------------------------
+                replaces (original id): {order.replaces}
+                id (new order): {order.id}
+                client_order_id: {order.client_order_id}
+                symbol: {order.symbol}
+                side: {order.side}
+                order_type: {order.order_type}
+                qty: {order.qty}
+                limit_price: {order.limit_price}
+                stop_price: {order.stop_price}
+                trail_percent: {order.trail_percent}
+                trail_price: {order.trail_price}
+                time_in_force: {order.time_in_force}
+                status: {order.status}
+                submitted_at: {order.submitted_at}
+                updated_at: {order.updated_at}
+                """
+    except Exception as e:
+        return f"Error replacing order {order_id}: {str(e)}"
 
 # =======================================================================================
 # Position Management Tools
